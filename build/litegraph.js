@@ -419,7 +419,11 @@
                 }
             }
 
-            return this.auto_sort_node_types ? r.sort() : r;
+            if (this.auto_sort_node_types) {
+                r.sort((a, b) => a.title.localeCompare(b.title));
+            }
+
+            return r;
         },
 
         /**
@@ -3501,7 +3505,7 @@
         out[0] = this.pos[0] - 4;
         out[1] = this.pos[1] - LiteGraph.NODE_TITLE_HEIGHT;
         out[2] = this.size[0] + 4;
-        out[3] = this.size[1] + LiteGraph.NODE_TITLE_HEIGHT;
+        out[3] = this.flags.collapsed ? LiteGraph.NODE_TITLE_HEIGHT : this.size[1] + LiteGraph.NODE_TITLE_HEIGHT;
 
         if (this.onBounding) {
             this.onBounding(out);
@@ -4486,25 +4490,18 @@ LGraphNode.prototype.executeAction = function(action)
         e.canvasy = y;
         e.dragging = this.dragging;
 
+		var is_inside = !this.viewport || ( this.viewport && x >= this.viewport[0] && x < (this.viewport[0] + this.viewport[2]) && y >= this.viewport[1] && y < (this.viewport[1] + this.viewport[3]) );
+
         var ignore = false;
         if (this.onmouse) {
             ignore = this.onmouse(e);
         }
 
-        if (e.type == "mousedown") {
+        if (e.type == "mousedown" && is_inside) {
             this.dragging = true;
-            canvas.removeEventListener(
-                "mousemove",
-                this._binded_mouse_callback
-            );
-            document.body.addEventListener(
-                "mousemove",
-                this._binded_mouse_callback
-            );
-            document.body.addEventListener(
-                "mouseup",
-                this._binded_mouse_callback
-            );
+            canvas.removeEventListener( "mousemove", this._binded_mouse_callback );
+            document.body.addEventListener( "mousemove", this._binded_mouse_callback );
+            document.body.addEventListener( "mouseup", this._binded_mouse_callback );
         } else if (e.type == "mousemove") {
             if (!ignore) {
                 var deltax = x - this.last_mouse[0];
@@ -4515,19 +4512,13 @@ LGraphNode.prototype.executeAction = function(action)
             }
         } else if (e.type == "mouseup") {
             this.dragging = false;
-            document.body.removeEventListener(
-                "mousemove",
-                this._binded_mouse_callback
-            );
-            document.body.removeEventListener(
-                "mouseup",
-                this._binded_mouse_callback
-            );
-            canvas.addEventListener("mousemove", this._binded_mouse_callback);
-        } else if (
-            e.type == "mousewheel" ||
+            document.body.removeEventListener( "mousemove", this._binded_mouse_callback );
+            document.body.removeEventListener( "mouseup", this._binded_mouse_callback );
+            canvas.addEventListener("mousemove", this._binded_mouse_callback );
+        } else if ( is_inside &&
+            (e.type == "mousewheel" ||
             e.type == "wheel" ||
-            e.type == "DOMMouseScroll"
+            e.type == "DOMMouseScroll")
         ) {
             e.eventType = "mousewheel";
             if (e.type == "wheel") {
@@ -4549,9 +4540,12 @@ LGraphNode.prototype.executeAction = function(action)
         this.last_mouse[0] = x;
         this.last_mouse[1] = y;
 
-        e.preventDefault();
-        e.stopPropagation();
-        return false;
+		if(is_inside)
+		{
+	        e.preventDefault();
+		    e.stopPropagation();
+		    return false;
+		}
     };
 
     DragAndScale.prototype.toCanvasContext = function(ctx) {
@@ -4652,7 +4646,7 @@ LGraphNode.prototype.executeAction = function(action)
      * @param {Object} options [optional] { skip_rendering, autoresize, viewport }
      */
     function LGraphCanvas(canvas, graph, options) {
-        options = options || {};
+        this.options = options = options || {};
 
         //if(graph === undefined)
         //	throw ("No graph assigned");
@@ -4751,7 +4745,7 @@ LGraphNode.prototype.executeAction = function(action)
             graph.attachCanvas(this);
         }
 
-        this.setCanvas(canvas);
+        this.setCanvas(canvas,options.skip_events);
         this.clear();
 
         if (!options.skip_render) {
@@ -5235,25 +5229,25 @@ LGraphNode.prototype.executeAction = function(action)
         LGraphCanvas.active_canvas = this;
         var that = this;
 
-        //move mouse move event to the window in case it drags outside of the canvas
-        this.canvas.removeEventListener("mousemove", this._mousemove_callback);
-        ref_window.document.addEventListener(
-            "mousemove",
-            this._mousemove_callback,
-            true
-        ); //catch for the entire window
-        ref_window.document.addEventListener(
-            "mouseup",
-            this._mouseup_callback,
-            true
-        );
+		var x = e.localX;
+		var y = e.localY;
+		//console.log(y,this.viewport);
 
-        var node = this.graph.getNodeOnPos(
-            e.canvasX,
-            e.canvasY,
-            this.visible_nodes,
-            5
-        );
+		this.ds.viewport = this.viewport;
+		var is_inside = !this.viewport || ( this.viewport && x >= this.viewport[0] && x < (this.viewport[0] + this.viewport[2]) && y >= this.viewport[1] && y < (this.viewport[1] + this.viewport[3]) );
+
+        //move mouse move event to the window in case it drags outside of the canvas
+		if(!this.options.skip_events)
+		{
+			this.canvas.removeEventListener("mousemove", this._mousemove_callback);
+			ref_window.document.addEventListener( "mousemove", this._mousemove_callback, true ); //catch for the entire window
+			ref_window.document.addEventListener( "mouseup", this._mouseup_callback, true );
+		}
+
+		if(!is_inside)
+			return;
+
+        var node = this.graph.getNodeOnPos( e.canvasX, e.canvasY, this.visible_nodes, 5 );
         var skip_dragging = false;
         var skip_action = false;
         var now = LiteGraph.getTime();
@@ -5297,11 +5291,7 @@ LGraphNode.prototype.executeAction = function(action)
                 } //if it wasn't selected?
 
                 //not dragging mouse to connect two slots
-                if (
-                    !this.connecting_node &&
-                    !node.flags.collapsed &&
-                    !this.live_mode
-                ) {
+                if ( !this.connecting_node && !node.flags.collapsed && !this.live_mode ) {
                     //Search for corner for resize
                     if (
                         !skip_action &&
@@ -5322,11 +5312,7 @@ LGraphNode.prototype.executeAction = function(action)
                     } else {
                         //search for outputs
                         if (node.outputs) {
-                            for (
-                                var i = 0, l = node.outputs.length;
-                                i < l;
-                                ++i
-                            ) {
+                            for ( var i = 0, l = node.outputs.length; i < l; ++i ) {
                                 var output = node.outputs[i];
                                 var link_pos = node.getConnectionPos(false, i);
                                 if (
@@ -5366,11 +5352,7 @@ LGraphNode.prototype.executeAction = function(action)
 
                         //search for inputs
                         if (node.inputs) {
-                            for (
-                                var i = 0, l = node.inputs.length;
-                                i < l;
-                                ++i
-                            ) {
+                            for ( var i = 0, l = node.inputs.length; i < l; ++i ) {
                                 var input = node.inputs[i];
                                 var link_pos = node.getConnectionPos(true, i);
                                 if (
@@ -5808,9 +5790,12 @@ LGraphNode.prototype.executeAction = function(action)
         LGraphCanvas.active_canvas = this;
 
         //restore the mousemove event back to the canvas
-        document.removeEventListener("mousemove",this._mousemove_callback,true);
-        this.canvas.addEventListener("mousemove",this._mousemove_callback,true);
-        document.removeEventListener("mouseup", this._mouseup_callback, true);
+		if(!this.options.skip_events)
+		{
+			document.removeEventListener("mousemove",this._mousemove_callback,true);
+			this.canvas.addEventListener("mousemove",this._mousemove_callback,true);
+			document.removeEventListener("mouseup", this._mouseup_callback, true);
+		}
 
         this.adjustMouseEvent(e);
         var now = LiteGraph.getTime();
@@ -6057,6 +6042,12 @@ LGraphNode.prototype.executeAction = function(action)
         var delta = e.wheelDeltaY != null ? e.wheelDeltaY : e.detail * -60;
 
         this.adjustMouseEvent(e);
+
+		var x = e.localX;
+		var y = e.localY;
+		var is_inside = !this.viewport || ( this.viewport && x >= this.viewport[0] && x < (this.viewport[0] + this.viewport[2]) && y >= this.viewport[1] && y < (this.viewport[1] + this.viewport[3]) );
+		if(!is_inside)
+			return;
 
         var scale = this.ds.scale;
 
@@ -6330,8 +6321,15 @@ LGraphNode.prototype.executeAction = function(action)
     LGraphCanvas.prototype.processDrop = function(e) {
         e.preventDefault();
         this.adjustMouseEvent(e);
+		var x = e.localX;
+		var y = e.localY;
+		var is_inside = !this.viewport || ( this.viewport && x >= this.viewport[0] && x < (this.viewport[0] + this.viewport[2]) && y >= this.viewport[1] && y < (this.viewport[1] + this.viewport[3]) );
+		if(!is_inside)
+			return;
 
         var pos = [e.canvasX, e.canvasY];
+
+
         var node = this.graph ? this.graph.getNodeOnPos(pos[0], pos[1]) : null;
 
         if (!node) {
@@ -6804,15 +6802,12 @@ LGraphNode.prototype.executeAction = function(action)
             return;
         }
 
-        if (ctx.start2D) {
-            ctx.start2D();
-        }
-
         var canvas = this.canvas;
-
-        //reset in case of error
-        ctx.restore();
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        if ( ctx.start2D && !this.viewport ) {
+            ctx.start2D();
+			ctx.restore();
+			ctx.setTransform(1, 0, 0, 1, 0, 0);
+        }
 
         //clip dirty area if there is one, otherwise work in full canvas
 		var area = this.viewport || this.dirty_area;
@@ -6826,7 +6821,10 @@ LGraphNode.prototype.executeAction = function(action)
         //clear
         //canvas.width = canvas.width;
         if (this.clear_background) {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
+			if(area)
+	            ctx.clearRect( area[0],area[1],area[2],area[3] );
+			else
+	            ctx.clearRect(0, 0, canvas.width, canvas.height);
         }
 
         //draw bg canvas
@@ -7149,6 +7147,7 @@ LGraphNode.prototype.executeAction = function(action)
 
         ctx.font = "10px Arial";
         ctx.fillStyle = "#888";
+		ctx.textAlign = "left";
         if (this.graph) {
             ctx.fillText( "T: " + this.graph.globaltime.toFixed(2) + "s", 5, 13 * 1 );
             ctx.fillText("I: " + this.graph.iteration, 5, 13 * 2 );
@@ -7221,8 +7220,11 @@ LGraphNode.prototype.executeAction = function(action)
         }
 
         //reset in case of error
-        ctx.restore();
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        if ( !this.viewport )
+		{
+	        ctx.restore();
+		    ctx.setTransform(1, 0, 0, 1, 0, 0);
+		}
         this.visible_links.length = 0;
 
         if (this.graph) {
@@ -8844,7 +8846,7 @@ LGraphNode.prototype.executeAction = function(action)
 			var widget_width = w.width || width;
 			//outside
 			if ( w != active_widget && 
-				(x < 6 || x > widget_width - 12 || y < w.last_y || y > w.last_y + widget_height) ) 
+				(x < 6 || x > widget_width - 12 || y < w.last_y || y > w.last_y + widget_height || w.last_y === undefined) ) 
 				continue;
 
 			var old_value = w.value;
@@ -8853,16 +8855,15 @@ LGraphNode.prototype.executeAction = function(action)
 			//inside widget
 			switch (w.type) {
 				case "button":
-					if (event.type === "mousemove") {
-						break;
-					}
-					if (w.callback) {
-						setTimeout(function() {
-							w.callback(w, that, node, pos, event);
-						}, 20);
-					}
-					w.clicked = true;
-					this.dirty_canvas = true;
+					if (event.type === "mousedown") {
+                        if (w.callback) {
+                            setTimeout(function() {
+                                w.callback(w, that, node, pos, event);
+                            }, 20);
+                        }
+                        w.clicked = true;
+                        this.dirty_canvas = true;
+                    }
 					break;
 				case "slider":
 					var range = w.options.max - w.options.min;
@@ -10233,7 +10234,8 @@ LGraphNode.prototype.executeAction = function(action)
 
 		root.close = function()
 		{
-			this.parentNode.removeChild(this);
+			if(this.parentNode)
+				this.parentNode.removeChild(this);
 		}
 
 		root.clear = function()
@@ -10283,7 +10285,7 @@ LGraphNode.prototype.executeAction = function(action)
 			var elem = document.createElement("div");
 			elem.className = "property";
 			elem.innerHTML = "<span class='property_name'></span><span class='property_value'></span>";
-			elem.querySelector(".property_name").innerText = name;
+			elem.querySelector(".property_name").innerText = options.label || name;
 			var value_element = elem.querySelector(".property_value");
 			value_element.innerText = str_value;
 			elem.dataset["property"] = name;
@@ -10327,7 +10329,7 @@ LGraphNode.prototype.executeAction = function(action)
 					innerChange(propname, v);
 				});
 			}
-			else if (type == "enum" || type == "combo")
+			else if (type == "enum" || type == "combo") {
 				var str_value = LGraphCanvas.getPropertyPrintableValue( value, options.values );
 				value_element.innerText = str_value;
 
@@ -10349,6 +10351,7 @@ LGraphNode.prototype.executeAction = function(action)
 						return false;
 					}
 				});
+            }
 
 			root.content.appendChild(elem);
 
@@ -14875,7 +14878,8 @@ if (typeof exports != "undefined") {
 
     //Converter
     function Converter() {
-        this.addInput("in", "*");
+        this.addInput("in", "");
+	this.addOutput("out");
         this.size = [80, 30];
     }
 
@@ -17744,7 +17748,7 @@ if (typeof exports != "undefined") {
     // Texture Webcam *****************************************
     function ImageWebcam() {
         this.addOutput("Webcam", "image");
-        this.properties = { facingMode: "user" };
+        this.properties = { filterFacingMode: false, facingMode: "user" };
         this.boxcolor = "black";
         this.frame = 0;
     }
@@ -17754,8 +17758,8 @@ if (typeof exports != "undefined") {
     ImageWebcam.is_webcam_open = false;
 
     ImageWebcam.prototype.openStream = function() {
-        if (!navigator.getUserMedia) {
-            //console.log('getUserMedia() is not supported in your browser, use chrome and enable WebRTC from about://flags');
+        if (!navigator.mediaDevices.getUserMedia) {
+            console.log('getUserMedia() is not supported in your browser, use chrome and enable WebRTC from about://flags');
             return;
         }
 
@@ -17764,7 +17768,7 @@ if (typeof exports != "undefined") {
         // Not showing vendor prefixes.
         var constraints = {
             audio: false,
-            video: { facingMode: this.properties.facingMode }
+            video: !this.properties.filterFacingMode ? true : { facingMode: this.properties.facingMode }
         };
         navigator.mediaDevices
             .getUserMedia(constraints)
